@@ -1,0 +1,31 @@
+representation learning for sequential decision making
+metric learning for vision
+hierarchical models for sparse-reward reinforcement learning
+theoretical issues in deep learning optimization
+representation learning for robotics
+
+self-supervised representation learning for vision
+contrastive learning for multimodal representations
+representation learning for time-series data
+learning invariant and equivariant representations
+disentangled representation learning
+
+representation learning for natural language processing
+representation learning for graph-structured data
+representation learning for audio and speech signals
+transfer learning and domain adaptation for representations
+continual learning of representations
+
+optimization methods for large-scale deep learning
+implicit bias of gradient-based optimization
+generalization in overparameterized neural networks
+scaling laws in deep learning models
+
+representation learning for reinforcement learning
+world models for decision making
+model-based reinforcement learning with learned representations
+exploration strategies in reinforcement learning
+
+interpretability of learned representations
+visualization of latent spaces in deep models
+robustness and adversarial stability of representations
