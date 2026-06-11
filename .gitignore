@@ -1,0 +1,42 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Outputs / generated data
+assembled_papers/
+assembled_papers_milouche/
+assembled_papers_v2/
+assembled_papers_v3/
+assembled_papers_v4/
+batch_output/
+chroma_iclr/
+eval_results/
+evaluation_outputs_v3/
+frozen_ideas/
+frozen_ideas_v2/
+generated_papers/
+out/
+out_general/
+plots_auto/
+rag_runs/
+rag_runs_milouche/
+rag_runs_v2/
+rag_runs_v3/
+rag_runs_v4/
+review_analysis_exports/
+review_outputs/
+tryouts/
+word_count_control_outputs/
+
+# Large/generated files
+*.csv
+*.log
