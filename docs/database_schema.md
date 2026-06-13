@@ -42,7 +42,7 @@ erDiagram
     }
 
     NOTE_FIELDS {
-        TEXT note_id PK
+        TEXT note_id PK, FK
         TEXT field_key PK
         TEXT value_type
         TEXT value_text
@@ -58,7 +58,7 @@ erDiagram
     }
 
     PAPER_PDF_TEXT {
-        TEXT paper_id PK
+        TEXT paper_id PK, FK
         TEXT pdf_url
         INTEGER retrieved_at
         TEXT status
