@@ -4,10 +4,18 @@
 erDiagram
     EDITIONS ||--o{ PAPERS : contains
     EDITIONS ||--o{ NOTES : contains
-    EDITIONS ||--o{ INVITATION_SCHEMAS : stores
-    PAPERS ||--o{ NOTES : has_forum_notes
-    NOTES ||--o{ NOTE_FIELDS : has_content_fields
-    PAPERS ||--o| PAPER_PDF_TEXT : has_extracted_text
+    EDITIONS ||--o{ INVITATION_SCHEMAS : has
+    EDITIONS ||--o{ REVIEWS : contains
+    EDITIONS ||--o{ PAPER_DECISIONS : contains
+
+    PAPERS ||--o{ NOTES : groups_by_forum
+    PAPERS ||--o{ REVIEWS : has
+    PAPERS ||--o| PAPER_DECISIONS : has
+    PAPERS ||--o| PAPER_PDF_TEXT : has
+
+    NOTES ||--o{ NOTE_FIELDS : has
+    NOTES ||--o| REVIEWS : specialized_as
+    NOTES ||--o| PAPER_DECISIONS : decision_note
 
     EDITIONS {
         TEXT edition_id PK
@@ -65,5 +73,33 @@ erDiagram
         INTEGER n_chars
         TEXT text
         TEXT error
+    }
+
+    REVIEWS {
+        TEXT review_id PK, FK
+        TEXT paper_id FK
+        TEXT forum FK
+        TEXT edition_id FK
+        TEXT reviewer_signature
+        REAL rating
+        REAL confidence
+        TEXT summary
+        TEXT strengths
+        TEXT weaknesses
+        TEXT questions
+        TEXT review_text
+        TEXT content_json
+        TEXT field_keys_json
+        TEXT raw_json
+    }
+
+    PAPER_DECISIONS {
+        TEXT paper_id PK, FK
+        TEXT forum FK
+        TEXT edition_id FK
+        TEXT decision_note_id FK
+        TEXT decision
+        TEXT decision_text
+        TEXT raw_json
     }
 ```
