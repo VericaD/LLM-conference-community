@@ -8,14 +8,14 @@ erDiagram
     EDITIONS ||--o{ REVIEWS : contains
     EDITIONS ||--o{ PAPER_DECISIONS : contains
 
-    PAPERS ||--o{ NOTES : groups_by_forum
-    PAPERS ||--o{ REVIEWS : has
-    PAPERS ||--o| PAPER_DECISIONS : has
-    PAPERS ||--o| PAPER_PDF_TEXT : has
+    PAPERS ||--o{ NOTES : has_forum_notes
+    PAPERS ||--o{ REVIEWS : has_reviews
+    PAPERS ||--o| PAPER_DECISIONS : has_decision
+    PAPERS ||--o| PAPER_PDF_TEXT : has_pdf_text
 
-    NOTES ||--o{ NOTE_FIELDS : has
-    NOTES ||--o| REVIEWS : specialized_as
-    NOTES ||--o| PAPER_DECISIONS : decision_note
+    NOTES ||--o{ NOTE_FIELDS : has_fields
+    NOTES ||--o| REVIEWS : specialized_as_review
+    NOTES ||--o| PAPER_DECISIONS : used_as_decision_note
 
     EDITIONS {
         TEXT edition_id PK
