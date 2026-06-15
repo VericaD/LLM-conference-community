@@ -32,10 +32,10 @@ The script normalizes note types based on OpenReview invitation names.
 
 By default, data is written under `out_general/`.
 
-Example for ICLR 2018:
+Example for ICLR 2019:
 
 ```text
-out_general/iclr2018_raw/papers.jsonl
-out_general/iclr2018_raw/notes.jsonl
-out_general/iclr2018_raw/submission_invitation.txt
-out_general/iclr2018.sqlite
+out_general/iclr2019_raw/papers.jsonl
+out_general/iclr2019_raw/notes.jsonl
+out_general/iclr2019_raw/submission_invitation.txt
+out_general/iclr2019.sqlite
