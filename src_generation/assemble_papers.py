@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""
+Assemble full paper JSON files from generated section outputs.
+
+The script reads per-section JSON files from `rag_runs/`, groups them by model
+and research idea, and saves one assembled paper JSON file per idea in
+`assembled_papers/`. Missing sections are recorded in the assembled output.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -6,13 +14,7 @@ import json
 import re
 from pathlib import Path
 
-
-DEFAULT_SECTIONS = ["introduction", "related_work", "background", "method", "experiments", "conclusion"]
-
-
-def make_safe_model_name(model: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_\-]+", "_", model.strip())
-
+from generate import PAPER_SECTION_ORDER
 
 def list_model_dirs(rag_runs_dir: str) -> list[Path]:
     base = Path(rag_runs_dir)
@@ -102,6 +104,9 @@ def assemble_one_paper(
 
     for section in required_sections:
         if section in loaded_sections:
+            if "generated_section" not in loaded_sections[section]:
+                raise ValueError(f"Missing generated_section in {section_paths[section]}")
+
             assembled_sections[section] = loaded_sections[section]["generated_section"]
             available_sections.append(section)
         else:
@@ -140,24 +145,14 @@ def save_assembled_paper(
 
     return out_path
 
-
 def main() -> None:
     ap = argparse.ArgumentParser(description="Assemble full papers from generated section files")
     ap.add_argument("--rag-runs-dir", default="./rag_runs", help="Directory containing per-model section outputs")
     ap.add_argument("--output-dir", default="./assembled_papers", help="Directory for assembled paper JSON files")
-    ap.add_argument(
-        "--models",
-        nargs="*",
-        default=None,
-        help="Optional list of model directory names to process, e.g. qwen2_5_7b llama3_1_8b",
-    )
-    ap.add_argument(
-        "--sections",
-        nargs="+",
-        default=DEFAULT_SECTIONS,
-        help="Required sections to assemble",
-    )
+    ap.add_argument("--models", nargs="*", default=None, help="Optional list of model directory names to process, e.g. qwen2_5_7b llama3_1_8b")
+    ap.add_argument("--sections", nargs="+", default=PAPER_SECTION_ORDER, help="Required sections to assemble")
     ap.add_argument("--skip-existing", action="store_true", help="Skip assembled papers that already exist")
+
     args = ap.parse_args()
 
     model_dirs = list_model_dirs(args.rag_runs_dir)

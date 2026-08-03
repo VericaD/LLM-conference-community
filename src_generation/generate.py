@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Provide reusable generation and RAG utilities for the paper generation pipeline.
+
+The module supports research-idea and abstract generation, context retrieval
+from ChromaDB, and generation of individual paper sections with Ollama or Hugging Face models. 
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -7,9 +14,19 @@ import re
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
+import time
 
 import chromadb
 import ollama
+
+try:
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+except ImportError:
+    torch = None
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+
 
 @dataclass
 class ResearchIdea:
@@ -17,33 +34,48 @@ class ResearchIdea:
     refined_problem: str
     titles: list[str]
 
+@dataclass
+class GenerationResult:
+    text: str
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    total_duration_seconds: float | None = None
+    prompt_eval_duration_seconds: float | None = None
+    eval_duration_seconds: float | None = None
+
 # ---------------------------
 # Config
 # ---------------------------
 
 EMBED_MODEL = "nomic-embed-text"
-DEFAULT_GEN_MODEL = "qwen2.5:7b"
+DEFAULT_GEN_MODEL = "qwen3:14b"
+
 CHROMA_DIR = "./chroma_iclr"
 COLLECTION = "iclr_papers"
+HF_MODEL_CACHE = {}
 
-ALLOWED_TARGET_SECTIONS = {
+PAPER_SECTION_ORDER = [
     "introduction",
     "related_work",
     "background",
     "method",
     "experiments",
     "conclusion",
-}
+]
+
+ALLOWED_TARGET_SECTIONS = set(PAPER_SECTION_ORDER)
 
 SECTION_RETRIEVAL_MAP = {
-    "introduction": ["abstract", "introduction", "related_work", "background"],
-    "related_work": ["related_work", "background", "introduction"],
-    "background": ["background", "introduction", "related_work"],
+    "introduction": ["abstract", "introduction", "related work", "background"],
+    "related_work": ["related work", "background", "introduction"],
+    "background": ["background", "introduction", "related work"],
     "method": ["abstract", "background", "method"],
     "experiments": ["method", "experiments", "conclusion"],
     "conclusion": ["abstract", "experiments", "conclusion"],
 }
 
+# Broad research directions taken from the ICLR Call for Papers
 BROAD_TOPIC_DIRECTIONS = [
     "unsupervised, semi-supervised, and supervised representation learning",
     "representation learning for planning and reinforcement learning",
@@ -191,15 +223,121 @@ def format_context(hits: list[dict]) -> str:
 
 
 # ---------------------------
-# Ollama generation helpers
+# Generation helpers
+# Supports Ollama models and Hugging Face models with the "hf:" prefix
 # ---------------------------
 
+def ns_to_seconds(value: int | None) -> float | None:
+    if value is None:
+        return None
+    return value / 1_000_000_000
+
+def hf_chat_generate(
+    model_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float = 0.7,
+    max_new_tokens: int = 2500,
+) -> GenerationResult:
+    if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
+        raise RuntimeError(
+            "Hugging Face generation requires torch and transformers. "
+            "Install them before using models with the hf: prefix."
+        )
+
+    if model_name not in HF_MODEL_CACHE:
+        print(f"[hf] loading model: {model_name}")
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+        )
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+
+        if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        model.eval()
+        HF_MODEL_CACHE[model_name] = (tokenizer, model)
+
+    tokenizer, model = HF_MODEL_CACHE[model_name]
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template is not None:
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        prompt = (
+            f"System:\n{system_prompt}\n\n"
+            f"User:\n{user_prompt}\n\n"
+            f"Assistant:\n"
+        )
+
+    input_device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt").to(input_device)
+
+    prompt_tokens = inputs["input_ids"].shape[-1]
+
+    start_time = time.perf_counter()
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=temperature > 0,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+
+    total_duration_seconds = time.perf_counter() - start_time
+
+    generated_tokens = outputs[0][prompt_tokens:]
+    completion_tokens = generated_tokens.shape[-1]
+
+    text = tokenizer.decode(
+        generated_tokens,
+        skip_special_tokens=True,
+    ).strip()
+
+    return GenerationResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        total_duration_seconds=total_duration_seconds,
+        prompt_eval_duration_seconds=None,
+        eval_duration_seconds=None,
+    )
 def chat_generate(
     model: str,
     system_prompt: str,
     user_prompt: str,
     temperature: float = 0.7,
-) -> str:
+) -> GenerationResult:
+    if model.startswith("hf:"):
+        hf_model_name = model.removeprefix("hf:")
+
+        return hf_chat_generate(
+            model_name=hf_model_name,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+        )
+
     response = ollama.chat(
         model=model,
         messages=[
@@ -210,8 +348,25 @@ def chat_generate(
             "temperature": temperature,
         },
     )
-    return response["message"]["content"].strip()
 
+    text = response["message"]["content"].strip()
+
+    prompt_tokens = response.get("prompt_eval_count")
+    completion_tokens = response.get("eval_count")
+
+    total_tokens = None
+    if prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+
+    return GenerationResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        total_duration_seconds=ns_to_seconds(response.get("total_duration")),
+        prompt_eval_duration_seconds=ns_to_seconds(response.get("prompt_eval_duration")),
+        eval_duration_seconds=ns_to_seconds(response.get("eval_duration")),
+    )
 
 def parse_numbered_titles(text: str) -> list[str]:
     titles = []
@@ -449,7 +604,7 @@ def build_section_generation_prompts(
         "Target length: 900 to 1200 words."
     ),
     "related_work": (
-        "Write a full Related Work section."
+        "Write a full Related Work section. "
         "Organize the discussion into 7 to 9 coherent academic paragraphs. "
         "Identify 2 to 4 major lines of prior work that are most relevant to this paper. "
         "For each line, explain the main idea, what it achieves, and its limitations relative to the present paper. "
@@ -459,7 +614,7 @@ def build_section_generation_prompts(
         "Target length: 900 to 1200 words."
     ),
     "background": (
-        "Write a full Background section."
+        "Write a full Background section. "
         "Use 7 to 9 coherent academic paragraphs. "
         "Introduce the technical concepts, assumptions, notation-level ideas, and problem setting needed to understand the paper. "
         "Explain only the background necessary for the proposed method and experiments. "
@@ -468,7 +623,7 @@ def build_section_generation_prompts(
         "Target length: 900 to 1200 words."
     ),
     "method": (
-        "Write a full Method section."
+        "Write a full Method section. "
         "Use 8 to 10 coherent academic paragraphs. "
         "Begin by restating the technical goal and the intuition behind the proposed approach. "
         "Then describe the main components of the method, how they interact, and the role each component plays. "
@@ -479,7 +634,7 @@ def build_section_generation_prompts(
         "Target length: 1000 to 1300 words."
     ),
     "experiments": (
-        "Write a full Experiments section."
+        "Write a full Experiments section. "
         "Use 8 to 10 coherent academic paragraphs. "
         "State the evaluation goal clearly. "
         "Describe a realistic experimental design, including task setting, dataset types, baseline families, and evaluation metrics. "
@@ -490,7 +645,7 @@ def build_section_generation_prompts(
         "Target length: 1000 to 1300 words."
     ),
     "conclusion": (
-        "Write a full Conclusion section."
+        "Write a full Conclusion section. "
         "Use 6 to 8 coherent academic paragraphs. "
         "Briefly restate the problem and the proposed idea. "
         "Summarize the main contribution and the most important experimental takeaway. "
@@ -550,13 +705,6 @@ Important constraints:
 - End with a brief high-level summary of the contribution.
 
 """
-
-### Step 1
-### Remark: section-generation prompt should be defined by the:
-# chosen direction, refined problem, title, and abstract
-### Retrievd chunks should help with:
-# style, terminology, common structure, literature context 
-# they should not define the main contribution
     return system_prompt.strip(), user_prompt.strip()
 
 
@@ -571,13 +719,14 @@ def generate_research_idea(topic: str, model: str, n_titles: int, temperature: f
         selected_direction=selected_direction,
     )
 
-    raw = chat_generate(
+    result = chat_generate(
         model=model,
         system_prompt=sys_p,
         user_prompt=usr_p,
         temperature=temperature,
     )
 
+    raw = result.text
     idea = parse_research_idea(raw, n_titles=n_titles)
     idea.titles = clean_title_candidates(idea.titles)
 
@@ -607,8 +756,12 @@ def generate_abstract(
     temperature: float,
 ) -> str:
     sys_p, usr_p = build_abstract_prompts(topic, title)
-    return chat_generate(model=model, system_prompt=sys_p, user_prompt=usr_p, temperature=temperature)
-
+    return chat_generate(
+        model=model,
+        system_prompt=sys_p,
+        user_prompt=usr_p,
+        temperature=temperature,
+    ).text
 
 def retrieve_context_for_section(
     collection: chromadb.Collection,
@@ -620,6 +773,9 @@ def retrieve_context_for_section(
     top_k: int,
     max_per_paper: int,
 ) -> list[dict]:
+    if target_section not in SECTION_RETRIEVAL_MAP:
+        raise ValueError(f"Unknown target section: {target_section}")
+
     retrieval_sections = SECTION_RETRIEVAL_MAP[target_section]
 
     retrieval_query = (
@@ -657,8 +813,9 @@ def generate_section(
     context_hits: list[dict],
     model: str,
     temperature: float,
-) -> str:
+) -> GenerationResult:
     context = format_context(context_hits)
+
     sys_p, usr_p = build_section_generation_prompts(
         topic=topic,
         chosen_direction=chosen_direction,
@@ -668,28 +825,16 @@ def generate_section(
         target_section=target_section,
         context=context,
     )
+
     return chat_generate(
         model=model,
         system_prompt=sys_p,
         user_prompt=usr_p,
         temperature=temperature,
     )
-
 # ---------------------------
 # Output helpers
 # ---------------------------
-
-def print_research_idea(idea: ResearchIdea) -> None:
-    print("\nChosen direction:")
-    print(idea.chosen_direction)
-
-    print("\nRefined problem:")
-    print(idea.refined_problem)
-
-    print("\nCandidate titles:")
-    for i, title in enumerate(idea.titles, start=1):
-        print(f"{i}. {title}")
-
 
 def print_context_hits(hits: list[dict]) -> None:
     print("\nRetrieved context:")
@@ -699,7 +844,6 @@ def print_context_hits(hits: list[dict]) -> None:
         print(f"   paper_id: {meta.get('paper_id')}")
         print(f"   title   : {meta.get('title')}")
         print(f"   section : {meta.get('section_name')}")
-        print(f"   preview : {item['document'][:220].replace(chr(10), ' ')}")
         print()
 
 
@@ -713,7 +857,7 @@ def save_run(
     selected_title: str,
     abstract: str,
     context_hits: list[dict],
-    generated_section: str,
+    generation_result: GenerationResult
 ) -> Path:
     safe_model = re.sub(r"[^a-zA-Z0-9_\-]+", "_", model.strip())
     safe_idea_id = re.sub(r"[^a-zA-Z0-9_\-]+", "_", idea_id.strip())
@@ -735,7 +879,17 @@ def save_run(
         "selected_title": selected_title,
         "abstract": abstract,
         "context_hits": context_hits,
-        "generated_section": generated_section,
+        "generated_section": generation_result.text,
+        "token_usage": {
+            "prompt_tokens": generation_result.prompt_tokens,
+            "completion_tokens": generation_result.completion_tokens,
+            "total_tokens": generation_result.total_tokens,
+        },
+        "timing": {
+            "total_duration_seconds": generation_result.total_duration_seconds,
+            "prompt_eval_duration_seconds": generation_result.prompt_eval_duration_seconds,
+            "eval_duration_seconds": generation_result.eval_duration_seconds,
+        }
     }
 
     with run_path.open("w", encoding="utf-8") as f:
@@ -777,128 +931,54 @@ def save_frozen_idea(
 # ---------------------------
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="RAG section generation for research papers")
-    ap.add_argument("--topic", help="High-level research topic")
-    ap.add_argument("--target-section", required=True, choices=sorted(ALLOWED_TARGET_SECTIONS), help="Section to generate",)
-    ap.add_argument("--model", default=DEFAULT_GEN_MODEL, help="Local Ollama generation model")
+    ap = argparse.ArgumentParser(description="Generate one paper section from one frozen idea using RAG")
+
+    ap.add_argument("--idea-file", required=True, help="Frozen idea JSON file to use")
+    ap.add_argument("--target-section", required=True, choices=sorted(ALLOWED_TARGET_SECTIONS), help="Section to generate")
+
+    ap.add_argument("--model", default=DEFAULT_GEN_MODEL, help="Generation moddel, use an Ollama or a HuggingFace model such as apertus")
+    ap.add_argument("--output-dir", default="./rag_runs", help="Directory where run JSON is saved")
+
     ap.add_argument("--embed-model", default=EMBED_MODEL, help="Embedding model for retrieval")
     ap.add_argument("--chroma-dir", default=CHROMA_DIR, help="ChromaDB persistence directory")
     ap.add_argument("--collection", default=COLLECTION, help="ChromaDB collection name")
-    ap.add_argument("--n-titles", type=int, default=5, help="Number of candidate titles to generate") 
-    ap.add_argument("--title-index", type=int, default=1, help="1-based index of the preserved generated idea to use for immediate section generation",)
+
     ap.add_argument("--top-k", type=int, default=4, help="Final number of retrieved chunks")
     ap.add_argument("--max-per-paper", type=int, default=1, help="Maximum retrieved chunks per paper")
     ap.add_argument("--temperature", type=float, default=0.7, help="Generation temperature")
-    ap.add_argument("--output-dir", default="./rag_runs", help="Directory where run JSON is saved")
-    ap.add_argument("--selected-direction", default=None,
-    help="Optional fixed broad research direction for controlled generation",)
-    ap.add_argument("--idea-file", default=None,
-    help="Optional JSON file containing a frozen idea (topic, direction, problem, title, abstract)",)
-    ap.add_argument("--frozen-ideas-dir", default="./frozen_ideas_v2",
-    help="Directory where frozen idea JSON files are stored",)
-    ap.add_argument("--idea-id", default=None,
-    help="Optional stable ID for the idea, e.g. idea_001",)
+
     args = ap.parse_args()
 
-    if not args.idea_file and not args.topic:
-        ap.error("--topic is required unless --idea-file is provided")
-
-    print("[1/5] loading Chroma collection ...")
+    print("[1/4] loading Chroma collection ...")
     collection = get_collection(args.chroma_dir, args.collection)
 
-    if args.idea_file:
-        print("[2/5] loading frozen idea ...")
-        frozen = load_frozen_idea(args.idea_file)
+    print("[2/4] loading frozen idea ...")
+    frozen = load_frozen_idea(args.idea_file)
 
-        idea_id = frozen["idea_id"]
-        topic = frozen["topic"]
-        chosen_direction = frozen["chosen_direction"]
-        refined_problem = frozen["refined_problem"]
-        selected_title = frozen["selected_title"]
-        abstract = frozen["abstract"]
+    idea_id = frozen["idea_id"]
+    topic = frozen["topic"]
+    chosen_direction = frozen["chosen_direction"]
+    refined_problem = frozen["refined_problem"]
+    selected_title = frozen["selected_title"]
+    abstract = frozen["abstract"]
 
-        research_idea = ResearchIdea(
-            chosen_direction=chosen_direction,
-            refined_problem=refined_problem,
-            titles=[selected_title],
-        )
+    research_idea = ResearchIdea(
+        chosen_direction=chosen_direction,
+        refined_problem=refined_problem,
+        titles=[selected_title],
+    )
 
-        print(f"\nIdea ID: {idea_id}")
-        print("\nChosen direction:")
-        print(chosen_direction)
-        print("\nRefined problem:")
-        print(refined_problem)
-        print("\nSelected title:")
-        print(selected_title)
-        print("\nAbstract:\n")
-        print(abstract)
+    print(f"\nIdea ID: {idea_id}")
+    print("\nChosen direction:")
+    print(chosen_direction)
+    print("\nRefined problem:")
+    print(refined_problem)
+    print("\nSelected title:")
+    print(selected_title)
+    print("\nAbstract:\n")
+    print(abstract)
 
-    else:
-        print("[2/5] generating research direction and candidate titles ...")
-        research_idea = generate_research_idea(
-            topic=args.topic,
-            model=args.model,
-            n_titles=args.n_titles,
-            temperature=args.temperature,
-            selected_direction=args.selected_direction,
-        )
-        print_research_idea(research_idea)
-
-        topic = args.topic
-        chosen_direction = research_idea.chosen_direction
-        refined_problem = research_idea.refined_problem
-        idea_id = args.idea_id or "idea_001"
-
-        generated_ideas = []
-
-        print(f"\n[3/5] generating abstracts and saving frozen ideas...")
-        for idx, title in enumerate(research_idea.titles, start=1):
-            print(f"\nGenerating abstract for title {idx}/{len(research_idea.titles)}")
-            print(f"\nSelected title: {title}")
-
-            abstract = generate_abstract(
-                topic=topic,
-                title=title,
-                model=args.model,
-                temperature=args.temperature,
-            )
-
-            print("\nAbstract:\n")
-            print(abstract)
-
-            current_idea_id = f"{idea_id}_{idx:02d}"
-
-            frozen_path = save_frozen_idea(
-                output_dir=args.frozen_ideas_dir,
-                idea_id=current_idea_id,
-                topic=topic,
-                chosen_direction=chosen_direction,
-                refined_problem=refined_problem,
-                selected_title=title,
-                abstract=abstract,
-            )
-            print(f"\nSaved frozen idea to: {frozen_path}")
-
-            generated_ideas.append(
-                {
-                    "idea_id": current_idea_id,
-                    "selected_title": title,
-                    "abstract": abstract,
-                }
-            )
-
-        if args.title_index < 1 or args.title_index > len(generated_ideas):
-            raise ValueError(f"title_index must be between 1 and {len(generated_ideas)}")
-
-        selected_generated_idea = generated_ideas[args.title_index - 1]
-        idea_id = selected_generated_idea["idea_id"]
-        selected_title = selected_generated_idea["selected_title"]
-        abstract = selected_generated_idea["abstract"]
-
-        print(f"\nUsing idea for section generation: {idea_id}")
-        print(f"Selected title: {selected_title}")
-
-    print("\n[4/5] retrieving context ...")
+    print("\n[3/4] retrieving context ...")
     context_hits = retrieve_context_for_section(
         collection=collection,
         topic=topic,
@@ -911,8 +991,8 @@ def main() -> None:
     )
     print_context_hits(context_hits)
 
-    print("[5/5] generating target section ...")
-    generated_section = generate_section(
+    print("[4/4] generating target section ...")
+    generation_result = generate_section(
         topic=topic,
         chosen_direction=chosen_direction,
         refined_problem=refined_problem,
@@ -925,7 +1005,7 @@ def main() -> None:
     )
 
     print(f"\nGenerated {args.target_section}:\n")
-    print(generated_section)
+    print(generation_result.text)
 
     saved_path = save_run(
         output_dir=args.output_dir,
@@ -937,8 +1017,13 @@ def main() -> None:
         selected_title=selected_title,
         abstract=abstract,
         context_hits=context_hits,
-        generated_section=generated_section,
+        generation_result=generation_result,
     )
+
+    print("\nToken usage:")
+    print(f"  prompt_tokens     : {generation_result.prompt_tokens}")
+    print(f"  completion_tokens : {generation_result.completion_tokens}")
+    print(f"  total_tokens      : {generation_result.total_tokens}")
 
     print(f"\nSaved run to: {saved_path}")
 
