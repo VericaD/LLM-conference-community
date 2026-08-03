@@ -15,4 +15,6 @@ frozen_ideas/  →  assembled_papers/  →  rag_runs/  →  review_outputs/
    ideas           generated papers      retrieval      reviews + decisions
 ```
 
+The rest of README will be uploaded in the nearest time possible :)
+
 
