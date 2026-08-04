@@ -1,4 +1,4 @@
-# Can LLMs Dream of a Research Community 
+# Can LLMs Dream of a Research Community ?
 *Generation, Peer Review, and Iteration Compared Against ICLR 2019*
 
 LLM agents generate ICLR-style papers, review them, and an area chair decides acceptance. Only scripts and notebooks are in this repo. All data below was generated on the university GPU cluster and the analysis notebooks were run locally.
