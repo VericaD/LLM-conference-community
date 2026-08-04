@@ -17,13 +17,6 @@ LLM agents generate ICLR-style papers, review them, and an area chair decides ac
 | `next_iteration.py` | `frozen_ideas_iter2/topics.txt` |
 
 
-## Requirements
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements_full.txt
-```
-
 ## Models
 - llama3.1:8b
 - qwen2.5:7b
